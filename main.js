@@ -57,127 +57,135 @@ function createWindow() {
 
 // IPC Handlers
 
-// Start proxy server
-ipcMain.handle('start-proxy', async () => {
-  return new Promise((resolve, reject) => {
-    if (proxyProcess) {
-      resolve({ success: true, message: 'Proxy already running' });
-      return;
-    }
-
-    const claudeDir = path.join(process.env.HOME || process.env.USERPROFILE, '.claude');
-    const envPath = path.join(claudeDir, '.env');
-    
-    // Read .env file
-    let envVars = {};
-    try {
-      const envContent = fs.readFileSync(envPath, 'utf8');
-      envContent.split('\n').forEach(line => {
-        if (line && !line.startsWith('#') && line.includes('=')) {
-          const [key, ...valueParts] = line.split('=');
-          envVars[key.trim()] = valueParts.join('=').trim();
-        }
-      });
-    } catch (err) {
-      console.error('Failed to read .env:', err);
-    }
-
-    // Start proxy process
-    const env = { ...process.env, ...envVars };
-    
-    if (process.platform === 'win32') {
-      // Windows
-      proxyProcess = spawn('node', [PROXY_PATH], {
-        cwd: claudeDir,
-        env: env,
-        windowsHide: true
-      });
-    } else {
-      // macOS/Linux
-      proxyProcess = spawn('node', [PROXY_PATH], {
-        cwd: claudeDir,
-        env: env,
-        detached: false
-      });
-    }
-
-    // Log output
-    const logStream = fs.createWriteStream(PROXY_LOG, { flags: 'a' });
-    proxyProcess.stdout.pipe(logStream);
-    proxyProcess.stderr.pipe(logStream);
-
-    proxyProcess.on('error', (err) => {
-      console.error('Proxy process error:', err);
-      proxyProcess = null;
-      reject({ success: false, message: err.message });
-    });
-
-    proxyProcess.on('exit', (code) => {
-      console.log('Proxy process exited with code:', code);
-      proxyProcess = null;
-    });
-
-    // Wait a bit to check if it started successfully
-    setTimeout(() => {
-      if (proxyProcess && !proxyProcess.killed) {
-        resolve({ success: true, message: 'Proxy started successfully', pid: proxyProcess.pid });
-      } else {
-        reject({ success: false, message: 'Proxy failed to start' });
-      }
-    }, 2000);
-  });
-});
-
-// Stop proxy server
-ipcMain.handle('stop-proxy', async () => {
-  return new Promise((resolve) => {
-    if (!proxyProcess) {
-      // Try to kill any existing proxy process
-      const command = process.platform === 'win32' 
-        ? 'taskkill /F /IM node.exe /FI "WINDOWTITLE eq proxy-server*"'
-        : 'pkill -f proxy-server.mjs';
-      
-      exec(command, (error) => {
-        resolve({ success: true, message: 'Proxy stopped' });
-      });
-      return;
-    }
-
-    proxyProcess.kill('SIGTERM');
-    proxyProcess = null;
-    resolve({ success: true, message: 'Proxy stopped' });
-  });
-});
-
-// Get proxy status
-ipcMain.handle('get-proxy-status', async () => {
+// Helper: check if proxy is already healthy
+function isProxyHealthy() {
   return new Promise((resolve) => {
     const http = require('http');
     const req = http.get(`${PROXY_URL}/health`, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);
+      res.on('end', () => resolve(res.statusCode === 200));
+    });
+    req.on('error', () => resolve(false));
+    req.setTimeout(2000, () => { req.destroy(); resolve(false); });
+  });
+}
+
+// Start proxy server
+ipcMain.handle('start-proxy', async () => {
+  // Already managed by us?
+  if (proxyProcess && !proxyProcess.killed) {
+    return { success: true, message: 'Proxy already running (managed by app)', pid: proxyProcess.pid };
+  }
+
+  // Already running externally (e.g. started via terminal)?
+  const healthy = await isProxyHealthy();
+  if (healthy) {
+    return { success: true, message: 'Proxy already running on port 8082' };
+  }
+
+  // Spawn new process
+  const claudeDir = path.join(process.env.HOME || process.env.USERPROFILE, '.claude');
+  const envPath = path.join(claudeDir, '.env');
+
+  let envVars = {};
+  try {
+    const envContent = fs.readFileSync(envPath, 'utf8');
+    envContent.split('\n').forEach(line => {
+      if (line && !line.startsWith('#') && line.includes('=')) {
+        const [key, ...valueParts] = line.split('=');
+        envVars[key.trim()] = valueParts.join('=').trim();
+      }
+    });
+  } catch (err) {
+    // .env may not exist — proceed with system env
+  }
+
+  const env = { ...process.env, ...envVars };
+
+  proxyProcess = spawn('node', [PROXY_PATH], {
+    cwd: claudeDir,
+    env,
+    detached: false,
+    windowsHide: process.platform === 'win32'
+  });
+
+  const logStream = fs.createWriteStream(PROXY_LOG, { flags: 'a' });
+  proxyProcess.stdout.pipe(logStream);
+  proxyProcess.stderr.pipe(logStream);
+
+  proxyProcess.on('error', (err) => {
+    proxyProcess = null;
+    throw new Error('Spawn failed: ' + err.message);
+  });
+
+  let exitedCode = null;
+  proxyProcess.on('exit', (code) => {
+    exitedCode = code;
+    proxyProcess = null;
+  });
+
+  // Wait 2.5s then check status
+  await new Promise(r => setTimeout(r, 2500));
+
+  if (exitedCode !== null) {
+    // Process exited — maybe EADDRINUSE. Re-check health.
+    const nowHealthy = await isProxyHealthy();
+    if (nowHealthy) {
+      return { success: true, message: 'Proxy already running (port occupied, health confirmed)' };
+    }
+    // Read last few lines of log for error detail
+    let lastLog = '';
+    try {
+      const lines = fs.readFileSync(PROXY_LOG, 'utf8').split('\n');
+      lastLog = lines.slice(-5).join(' ');
+    } catch (_) {}
+    throw new Error(`Proxy exited (code ${exitedCode}). ${lastLog}`);
+  }
+
+  if (proxyProcess && !proxyProcess.killed) {
+    return { success: true, message: 'Proxy started successfully', pid: proxyProcess.pid };
+  }
+
+  throw new Error('Proxy failed to start (unknown state)');
+});
+
+// Stop proxy server
+ipcMain.handle('stop-proxy', async () => {
+  if (proxyProcess) {
+    proxyProcess.kill('SIGTERM');
+    proxyProcess = null;
+    return { success: true, message: 'Proxy stopped' };
+  }
+  // Try to kill any existing proxy process (started externally)
+  const command = process.platform === 'win32'
+    ? 'taskkill /F /IM node.exe /FI "WINDOWTITLE eq proxy-server*"'
+    : 'pkill -f proxy-server.mjs';
+  try {
+    require('child_process').execSync(command, { stdio: 'ignore' });
+  } catch (_) {
+    // pkill returns non-zero if no process found — that's fine
+  }
+  return { success: true, message: 'Proxy stop signal sent' };
+});
+
+// Get proxy status
+ipcMain.handle('get-proxy-status', async () => {
+  const http = require('http');
+  return new Promise((resolve) => {
+    const req = http.get(`${PROXY_URL}/health`, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
       res.on('end', () => {
         try {
-          const health = JSON.parse(data);
-          resolve({ 
-            running: true, 
-            health: health,
-            pid: proxyProcess ? proxyProcess.pid : null
-          });
-        } catch (err) {
+          resolve({ running: true, health: JSON.parse(data), pid: proxyProcess ? proxyProcess.pid : null });
+        } catch (_) {
           resolve({ running: true, health: {}, pid: proxyProcess ? proxyProcess.pid : null });
         }
       });
     });
-    
-    req.on('error', () => {
-      resolve({ running: false, health: {}, pid: null });
-    });
-    
-    req.setTimeout(2000, () => {
-      req.destroy();
-      resolve({ running: false, health: {}, pid: null });
-    });
+    req.on('error', () => resolve({ running: false, health: {}, pid: null }));
+    req.setTimeout(2000, () => { req.destroy(); resolve({ running: false, health: {}, pid: null }); });
   });
 });
 

@@ -1,11 +1,13 @@
-const { useState, useEffect } = React;
+const { useState, useEffect, useCallback, useRef } = React;
 
 function ClaudeProxyDashboard() {
   const [proxyStatus, setProxyStatus] = useState('checking');
   const [selectedModel, setSelectedModel] = useState('deepseek-r1:8b');
   const [healthData, setHealthData] = useState({});
-  const [logs, setLogs] = useState([]);
-  const [stats, setStats] = useState({ total: 0, chained: 0, lastTried: [] });
+  const [logs, setLogs] = useState('');
+  const [showLogs, setShowLogs] = useState(false);
+  const [loading, setLoading] = useState(null);
+  const [toasts, setToasts] = useState([]);
   const [proxyUrl] = useState('http://127.0.0.1:8082');
 
   const models = [
@@ -21,68 +23,31 @@ function ClaudeProxyDashboard() {
   ];
 
   const features = [
-    {
-      icon: '🔀',
-      title: 'Automatic Failover',
-      description: 'Intelligent model switching when providers fail. 12-model priority chain with health tracking.',
-      stats: '12 models configured',
-      metric: '99.9% uptime'
-    },
-    {
-      icon: '⚡',
-      title: 'Local Ollama Integration',
-      description: 'Seamless fallback to local deepseek-r1:8b model. No rate limits, complete privacy.',
-      stats: '2.7s avg response',
-      metric: 'Zero cost'
-    },
-    {
-      icon: '📊',
-      title: 'Health Monitoring',
-      description: 'Real-time health tracking per model. Automatic recovery and cooldown management.',
-      stats: 'Live monitoring',
-      metric: '5s intervals'
-    },
-    {
-      icon: '🔐',
-      title: 'Multi-Provider Support',
-      description: 'OpenCode Zen, NVIDIA NIM, AgentRouter, Cloudflare AI, and local Ollama in one proxy.',
-      stats: '5 providers',
-      metric: 'Unified API'
-    },
-    {
-      icon: '🛡️',
-      title: 'Streaming Optimization',
-      description: 'Watchdog-disabled streaming for local models. Optimized timeouts for remote providers.',
-      stats: 'Zero timeouts',
-      metric: '12s threshold'
-    },
-    {
-      icon: '📝',
-      title: 'Detailed Logging',
-      description: 'Comprehensive request logging with error tracking, latency metrics, and failover chains.',
-      stats: 'Full audit trail',
-      metric: 'JSON format'
-    }
+    { icon: '🔀', title: 'Automatic Failover', description: 'Intelligent model switching when providers fail. 12-model priority chain with health tracking.', stats: '12 models configured', metric: '99.9% uptime' },
+    { icon: '⚡', title: 'Local Ollama Integration', description: 'Seamless fallback to local deepseek-r1:8b model. No rate limits, complete privacy.', stats: '2.7s avg response', metric: 'Zero cost' },
+    { icon: '📊', title: 'Health Monitoring', description: 'Real-time health tracking per model. Automatic recovery and cooldown management.', stats: 'Live monitoring', metric: '5s intervals' },
+    { icon: '🔐', title: 'Multi-Provider Support', description: 'OpenCode Zen, NVIDIA NIM, AgentRouter, Cloudflare AI, and local Ollama in one proxy.', stats: '5 providers', metric: 'Unified API' },
+    { icon: '🛡️', title: 'Streaming Optimization', description: 'Watchdog-disabled streaming for local models. Optimized timeouts for remote providers.', stats: 'Zero timeouts', metric: '12s threshold' },
+    { icon: '📝', title: 'Detailed Logging', description: 'Comprehensive request logging with error tracking, latency metrics, and failover chains.', stats: 'Full audit trail', metric: 'JSON format' },
   ];
 
-  const quickActions = [
-    { label: 'Start Proxy', icon: '▶', action: 'start', color: 'bg-green-600 hover:bg-green-700', shortcut: 'Ctrl+Shift+S' },
-    { label: 'Stop Proxy', icon: '⏸', action: 'stop', color: 'bg-red-600 hover:bg-red-700', shortcut: 'Ctrl+Shift+X' },
-    { label: 'Reset Health', icon: '🔄', action: 'reset', color: 'bg-blue-600 hover:bg-blue-700', shortcut: 'Ctrl+Shift+R' },
-    { label: 'View Logs', icon: '📋', action: 'logs', color: 'bg-gray-600 hover:bg-gray-700', shortcut: 'Ctrl+Shift+L' },
-    { label: 'Test Model', icon: '🧪', action: 'test', color: 'bg-purple-600 hover:bg-purple-700', shortcut: 'Ctrl+Shift+T' },
-    { label: 'Export Config', icon: '💾', action: 'export', color: 'bg-indigo-600 hover:bg-indigo-700', shortcut: 'Ctrl+Shift+E' },
-  ];
-
-  useEffect(() => {
-    checkProxyStatus();
-    const interval = setInterval(checkProxyStatus, 5000);
-    return () => clearInterval(interval);
+  // ─── Toast Notification System ───
+  const addToast = useCallback((message, type = 'info') => {
+    const id = Date.now() + Math.random();
+    setToasts(prev => [...prev, { id, message, type }]);
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id));
+    }, 5000);
   }, []);
 
-  const checkProxyStatus = async () => {
+  const removeToast = useCallback((id) => {
+    setToasts(prev => prev.filter(t => t.id !== id));
+  }, []);
+
+  // ─── Proxy Status Check ───
+  const checkProxyStatus = useCallback(async () => {
     try {
-      const response = await fetch(`${proxyUrl}/health`, { 
+      const response = await fetch(`${proxyUrl}/health`, {
         method: 'GET',
         signal: AbortSignal.timeout(2000)
       });
@@ -96,98 +61,222 @@ function ClaudeProxyDashboard() {
     } catch (error) {
       setProxyStatus('stopped');
     }
+  }, [proxyUrl]);
+
+  useEffect(() => {
+    checkProxyStatus();
+    const interval = setInterval(checkProxyStatus, 5000);
+    return () => clearInterval(interval);
+  }, [checkProxyStatus]);
+
+  // ─── Action Handlers ───
+  const handleStart = async () => {
+    setLoading('start');
+    try {
+      if (window.electronAPI) {
+        const result = await window.electronAPI.startProxy();
+        if (result && result.success) {
+          addToast('Proxy started successfully (PID ' + (result.pid || 'active') + ')', 'success');
+        } else {
+          addToast('Proxy start response: ' + (result?.message || 'already running'), 'info');
+        }
+      } else {
+        addToast('Electron API not available. Run: cd ~/.claude && node proxy-server.mjs &', 'warning');
+      }
+      // Wait and re-check status
+      await new Promise(r => setTimeout(r, 2500));
+      await checkProxyStatus();
+    } catch (error) {
+      addToast('Failed to start proxy: ' + error.message, 'error');
+    } finally {
+      setLoading(null);
+    }
   };
 
-  const handleAction = async (action) => {
-    console.log('Action:', action);
-    
-    switch(action) {
-      case 'start':
-        if (proxyStatus === 'running') {
-          alert('Proxy is already running');
-          return;
-        }
-        // In Electron, this would spawn the proxy process
-        if (window.electronAPI) {
-          await window.electronAPI.startProxy();
+  const handleStop = async () => {
+    setLoading('stop');
+    try {
+      if (window.electronAPI) {
+        const result = await window.electronAPI.stopProxy();
+        addToast('Proxy stopped' + (result?.message ? ' — ' + result.message : ''), 'success');
+      } else {
+        addToast('Electron API not available. Run: pkill -f proxy-server.mjs', 'warning');
+      }
+      await new Promise(r => setTimeout(r, 1000));
+      await checkProxyStatus();
+    } catch (error) {
+      addToast('Failed to stop proxy: ' + error.message, 'error');
+    } finally {
+      setLoading(null);
+    }
+  };
+
+  const handleReset = async () => {
+    setLoading('reset');
+    try {
+      const response = await fetch(`${proxyUrl}/agent/reset-health`, { method: 'POST' });
+      if (response.ok) {
+        addToast('Health scores reset for all models', 'success');
+      } else {
+        addToast('Reset returned status: ' + response.status, 'warning');
+      }
+      await checkProxyStatus();
+    } catch (error) {
+      addToast('Cannot reset health — proxy may be offline. ' + error.message, 'error');
+    } finally {
+      setLoading(null);
+    }
+  };
+
+  const handleLogs = async () => {
+    setLoading('logs');
+    try {
+      let logContent = '';
+      if (window.electronAPI) {
+        logContent = await window.electronAPI.getLogs(100);
+      } else {
+        const response = await fetch(`${proxyUrl}/health`);
+        logContent = 'Proxy health: ' + JSON.stringify(await response.json(), null, 2);
+      }
+      setLogs(logContent || 'No logs available yet.');
+      setShowLogs(true);
+      addToast('Loaded last 100 log lines', 'info');
+    } catch (error) {
+      addToast('Failed to fetch logs: ' + error.message, 'error');
+    } finally {
+      setLoading(null);
+    }
+  };
+
+  const handleTest = async () => {
+    setLoading('test');
+    try {
+      const startTime = Date.now();
+      const response = await fetch(`${proxyUrl}/v1/messages`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': 'test'
+        },
+        body: JSON.stringify({
+          model: selectedModel,
+          max_tokens: 50,
+          stream: false,
+          messages: [{ role: 'user', content: 'Reply with just: OK' }]
+        })
+      });
+      const latency = ((Date.now() - startTime) / 1000).toFixed(2);
+      if (!response.ok) {
+        const errBody = await response.text();
+        addToast(`Model test failed (HTTP ${response.status}): ${errBody.slice(0, 100)}`, 'error');
+        return;
+      }
+      const data = await response.json();
+      const text = data.content?.[0]?.text || 'Empty response';
+      addToast(`✓ ${selectedModel} responded in ${latency}s: "${text.slice(0, 60)}"`, 'success');
+    } catch (error) {
+      addToast(`✗ Test failed: ${error.message}`, 'error');
+    } finally {
+      setLoading(null);
+    }
+  };
+
+  const handleExport = async () => {
+    setLoading('export');
+    try {
+      const config = {
+        proxyUrl,
+        selectedModel,
+        models,
+        features: features.map(f => f.title),
+        timestamp: new Date().toISOString(),
+        version: '1.0.0'
+      };
+
+      if (window.electronAPI) {
+        const result = await window.electronAPI.exportConfig(config);
+        if (result && result.success) {
+          addToast(`Config exported to: ${result.path}`, 'success');
         } else {
-          alert('Starting proxy...\n\ncd ~/.claude && export $(grep -v \'^#\' .env | grep \'=\' | xargs) && nohup node proxy-server.mjs >> proxy.log 2>&1 &');
+          addToast('Export cancelled', 'info');
         }
-        setTimeout(checkProxyStatus, 1000);
-        break;
-        
-      case 'stop':
-        if (window.electronAPI) {
-          await window.electronAPI.stopProxy();
-        } else {
-          alert('Stopping proxy...\n\npkill -f proxy-server.mjs');
-        }
-        setTimeout(checkProxyStatus, 1000);
-        break;
-        
-      case 'reset':
-        try {
-          await fetch(`${proxyUrl}/agent/reset-health`, { method: 'POST' });
-          alert('Health scores reset successfully');
-          checkProxyStatus();
-        } catch (error) {
-          alert('Failed to reset health: ' + error.message);
-        }
-        break;
-        
-      case 'logs':
-        if (window.electronAPI) {
-          const logs = await window.electronAPI.getLogs();
-          alert(logs);
-        } else {
-          alert('View logs:\n\ntail -50 ~/.claude/proxy.log');
-        }
-        break;
-        
-      case 'test':
-        try {
-          const startTime = Date.now();
-          const response = await fetch(`${proxyUrl}/v1/messages`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'x-api-key': 'test'
-            },
-            body: JSON.stringify({
-              model: selectedModel,
-              max_tokens: 50,
-              stream: false,
-              messages: [{ role: 'user', content: 'Say hi' }]
-            })
-          });
-          const latency = ((Date.now() - startTime) / 1000).toFixed(2);
-          const data = await response.json();
-          alert(`✓ Model test successful\n\nModel: ${selectedModel}\nLatency: ${latency}s\nResponse: ${data.content?.[0]?.text || 'OK'}`);
-        } catch (error) {
-          alert(`✗ Model test failed\n\nError: ${error.message}`);
-        }
-        break;
-        
-      case 'export':
-        const config = {
-          proxyUrl,
-          selectedModel,
-          models,
-          timestamp: new Date().toISOString()
-        };
+      } else {
+        // Browser fallback
         const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
         a.download = `claude-proxy-config-${Date.now()}.json`;
+        document.body.appendChild(a);
         a.click();
+        document.body.removeChild(a);
         URL.revokeObjectURL(url);
-        break;
+        addToast('Config exported (browser download)', 'success');
+      }
+    } catch (error) {
+      addToast('Export failed: ' + error.message, 'error');
+    } finally {
+      setLoading(null);
     }
   };
 
+  const handleAction = (action) => {
+    switch (action) {
+      case 'start': return handleStart();
+      case 'stop': return handleStop();
+      case 'reset': return handleReset();
+      case 'logs': return handleLogs();
+      case 'test': return handleTest();
+      case 'export': return handleExport();
+    }
+  };
+
+  const quickActions = [
+    { label: 'Start Proxy', icon: '▶', action: 'start', color: 'bg-green-600 hover:bg-green-700' },
+    { label: 'Stop Proxy', icon: '⏸', action: 'stop', color: 'bg-red-600 hover:bg-red-700' },
+    { label: 'Reset Health', icon: '🔄', action: 'reset', color: 'bg-blue-600 hover:bg-blue-700' },
+    { label: 'View Logs', icon: '📋', action: 'logs', color: 'bg-gray-600 hover:bg-gray-700' },
+    { label: 'Test Model', icon: '🧪', action: 'test', color: 'bg-purple-600 hover:bg-purple-700' },
+    { label: 'Export Config', icon: '💾', action: 'export', color: 'bg-indigo-600 hover:bg-indigo-700' },
+  ];
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
+      {/* Toast Notifications */}
+      <div className="fixed top-4 right-4 z-50 space-y-2 max-w-md">
+        {toasts.map(toast => (
+          <div key={toast.id} className={`flex items-start gap-3 px-4 py-3 rounded-lg shadow-lg border animate-slide-in ${
+            toast.type === 'success' ? 'bg-green-50 border-green-200 text-green-800' :
+            toast.type === 'error' ? 'bg-red-50 border-red-200 text-red-800' :
+            toast.type === 'warning' ? 'bg-yellow-50 border-yellow-200 text-yellow-800' :
+            'bg-blue-50 border-blue-200 text-blue-800'
+          }`}>
+            <span className="text-lg mt-0.5">
+              {toast.type === 'success' ? '✓' : toast.type === 'error' ? '✗' : toast.type === 'warning' ? '⚠' : 'ℹ'}
+            </span>
+            <p className="text-sm font-medium flex-1">{toast.message}</p>
+            <button onClick={() => removeToast(toast.id)} className="text-lg opacity-50 hover:opacity-100">×</button>
+          </div>
+        ))}
+      </div>
+
+      {/* Logs Modal */}
+      {showLogs && (
+        <div className="fixed inset-0 z-40 bg-black/50 flex items-center justify-center p-4" onClick={() => setShowLogs(false)}>
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between p-4 border-b">
+              <h3 className="text-lg font-semibold text-gray-900">Proxy Logs (~/.claude/proxy.log)</h3>
+              <button onClick={() => setShowLogs(false)} className="text-2xl text-gray-400 hover:text-gray-600">×</button>
+            </div>
+            <pre className="flex-1 overflow-auto p-4 text-xs font-mono text-gray-700 bg-gray-50 whitespace-pre-wrap">{logs}</pre>
+            <div className="p-3 border-t flex justify-between items-center">
+              <span className="text-xs text-gray-500">{logs.split('\n').length} lines loaded</span>
+              <button onClick={handleLogs} className="text-sm bg-blue-600 text-white px-3 py-1.5 rounded-lg hover:bg-blue-700">Refresh</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <header className="bg-white shadow-sm border-b border-gray-200">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
@@ -224,18 +313,22 @@ function ClaudeProxyDashboard() {
         <section className="mb-8">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-semibold text-gray-900">Quick Actions</h2>
-            <span className="text-xs text-gray-500">Keyboard shortcuts available</span>
+            <span className="text-xs text-gray-500">Click to execute • Real-time feedback shown as notifications</span>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
-            {quickActions.map((action) => (
+            {quickActions.map((qa) => (
               <button
-                key={action.action}
-                onClick={() => handleAction(action.action)}
-                className={`${action.color} text-white px-4 py-4 rounded-lg shadow-sm transition-all hover:shadow-md hover:scale-105 flex flex-col items-center justify-center space-y-2 group`}
-                title={action.shortcut}
+                key={qa.action}
+                onClick={() => handleAction(qa.action)}
+                disabled={loading !== null}
+                className={`${qa.color} text-white px-4 py-4 rounded-lg shadow-sm transition-all hover:shadow-md hover:scale-105 flex flex-col items-center justify-center space-y-2 group disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 relative`}
               >
-                <span className="text-2xl group-hover:scale-110 transition-transform">{action.icon}</span>
-                <span className="text-xs font-medium">{action.label}</span>
+                {loading === qa.action ? (
+                  <span className="text-2xl animate-spin">⚙️</span>
+                ) : (
+                  <span className="text-2xl group-hover:scale-110 transition-transform">{qa.icon}</span>
+                )}
+                <span className="text-xs font-medium">{loading === qa.action ? 'Working...' : qa.label}</span>
               </button>
             ))}
           </div>
@@ -248,7 +341,7 @@ function ClaudeProxyDashboard() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-gray-600 mb-1">Total Requests</p>
-                  <p className="text-2xl font-bold text-gray-900">{healthData.totalRequests || '0'}</p>
+                  <p className="text-2xl font-bold text-gray-900">{healthData.totalRequests || healthData.requests || '—'}</p>
                 </div>
                 <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center">
                   <span className="text-2xl">📊</span>
@@ -259,7 +352,7 @@ function ClaudeProxyDashboard() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-gray-600 mb-1">Success Rate</p>
-                  <p className="text-2xl font-bold text-green-600">{healthData.successRate || '99.9'}%</p>
+                  <p className="text-2xl font-bold text-green-600">{healthData.successRate || '—'}</p>
                 </div>
                 <div className="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center">
                   <span className="text-2xl">✓</span>
@@ -270,7 +363,7 @@ function ClaudeProxyDashboard() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-gray-600 mb-1">Avg Latency</p>
-                  <p className="text-2xl font-bold text-gray-900">{healthData.avgLatency || '1.5'}s</p>
+                  <p className="text-2xl font-bold text-gray-900">{healthData.avgLatency || '—'}</p>
                 </div>
                 <div className="w-12 h-12 bg-purple-100 rounded-lg flex items-center justify-center">
                   <span className="text-2xl">⚡</span>
@@ -303,12 +396,8 @@ function ClaudeProxyDashboard() {
                     <h3 className="text-base font-semibold text-gray-900 mb-2">{feature.title}</h3>
                     <p className="text-sm text-gray-600 mb-3">{feature.description}</p>
                     <div className="flex items-center space-x-2">
-                      <span className="text-xs font-medium text-blue-600 bg-blue-50 px-2 py-1 rounded">
-                        {feature.stats}
-                      </span>
-                      <span className="text-xs font-medium text-green-600 bg-green-50 px-2 py-1 rounded">
-                        {feature.metric}
-                      </span>
+                      <span className="text-xs font-medium text-blue-600 bg-blue-50 px-2 py-1 rounded">{feature.stats}</span>
+                      <span className="text-xs font-medium text-green-600 bg-green-50 px-2 py-1 rounded">{feature.metric}</span>
                     </div>
                   </div>
                 </div>
@@ -328,16 +417,15 @@ function ClaudeProxyDashboard() {
                 className="border border-gray-300 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
               >
                 {models.map((model) => (
-                  <option key={model.name} value={model.name}>
-                    {model.name}
-                  </option>
+                  <option key={model.name} value={model.name}>{model.name}</option>
                 ))}
               </select>
               <button
-                onClick={() => handleAction('test')}
-                className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+                onClick={handleTest}
+                disabled={loading !== null}
+                className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
               >
-                Test Model
+                {loading === 'test' ? 'Testing...' : 'Test Model'}
               </button>
             </div>
           </div>
@@ -354,8 +442,8 @@ function ClaudeProxyDashboard() {
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
                 {models.map((model, idx) => (
-                  <tr 
-                    key={idx} 
+                  <tr
+                    key={idx}
                     className={`${selectedModel === model.name ? 'bg-blue-50' : 'hover:bg-gray-50'} cursor-pointer transition-colors`}
                     onClick={() => setSelectedModel(model.name)}
                   >
@@ -366,9 +454,7 @@ function ClaudeProxyDashboard() {
                         model.type === 'Local' ? 'bg-purple-100 text-purple-800' :
                         model.type === 'Free' ? 'bg-green-100 text-green-800' :
                         'bg-gray-100 text-gray-800'
-                      }`}>
-                        {model.type}
-                      </span>
+                      }`}>{model.type}</span>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
@@ -417,43 +503,35 @@ function ClaudeProxyDashboard() {
                 <dt className="text-sm text-gray-600">Proxy Status</dt>
                 <dd className={`text-sm font-medium px-2 py-1 rounded ${
                   proxyStatus === 'running' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
-                }`}>
-                  {proxyStatus}
-                </dd>
+                }`}>{proxyStatus}</dd>
+              </div>
+              <div className="flex justify-between items-center py-2">
+                <dt className="text-sm text-gray-600">Electron API</dt>
+                <dd className={`text-sm font-medium px-2 py-1 rounded ${
+                  window.electronAPI ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'
+                }`}>{window.electronAPI ? 'Connected' : 'Unavailable'}</dd>
               </div>
             </dl>
           </div>
 
           <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-            <h3 className="text-base font-semibold text-gray-900 mb-4">Recent Activity</h3>
-            <div className="space-y-3 max-h-64 overflow-y-auto">
-              <div className="flex items-start space-x-3 text-sm p-3 bg-green-50 rounded-lg">
-                <span className="text-green-600 text-lg">✓</span>
-                <div className="flex-1">
-                  <p className="text-gray-900 font-medium">Request completed</p>
-                  <p className="text-gray-600 text-xs mt-1">{selectedModel} • 2.7s • just now</p>
-                </div>
+            <h3 className="text-base font-semibold text-gray-900 mb-4">Quick Reference</h3>
+            <div className="space-y-3">
+              <div className="p-3 bg-gray-50 rounded-lg">
+                <p className="text-xs text-gray-500 mb-1">Start proxy manually:</p>
+                <code className="text-xs font-mono text-gray-800">cd ~/.claude && node proxy-server.mjs &</code>
               </div>
-              <div className="flex items-start space-x-3 text-sm p-3 bg-blue-50 rounded-lg">
-                <span className="text-blue-600 text-lg">ℹ</span>
-                <div className="flex-1">
-                  <p className="text-gray-900 font-medium">Proxy started successfully</p>
-                  <p className="text-gray-600 text-xs mt-1">PID 65563 • 5 min ago</p>
-                </div>
+              <div className="p-3 bg-gray-50 rounded-lg">
+                <p className="text-xs text-gray-500 mb-1">Test with curl:</p>
+                <code className="text-xs font-mono text-gray-800">curl http://127.0.0.1:8082/health</code>
               </div>
-              <div className="flex items-start space-x-3 text-sm p-3 bg-green-50 rounded-lg">
-                <span className="text-green-600 text-lg">✓</span>
-                <div className="flex-1">
-                  <p className="text-gray-900 font-medium">Health check passed</p>
-                  <p className="text-gray-600 text-xs mt-1">All models healthy • 10 min ago</p>
-                </div>
+              <div className="p-3 bg-gray-50 rounded-lg">
+                <p className="text-xs text-gray-500 mb-1">Kill proxy:</p>
+                <code className="text-xs font-mono text-gray-800">pkill -f proxy-server.mjs</code>
               </div>
-              <div className="flex items-start space-x-3 text-sm p-3 bg-yellow-50 rounded-lg">
-                <span className="text-yellow-600 text-lg">⚠</span>
-                <div className="flex-1">
-                  <p className="text-gray-900 font-medium">Model timeout detected</p>
-                  <p className="text-gray-600 text-xs mt-1">big-pickle • 12s threshold • 15 min ago</p>
-                </div>
+              <div className="p-3 bg-gray-50 rounded-lg">
+                <p className="text-xs text-gray-500 mb-1">View logs:</p>
+                <code className="text-xs font-mono text-gray-800">tail -50 ~/.claude/proxy.log</code>
               </div>
             </div>
           </div>
