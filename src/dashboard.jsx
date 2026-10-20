@@ -47,16 +47,26 @@ function ClaudeProxyDashboard() {
     }
   }, []);
 
-  // ─── Proxy Status Polling ───
+  // ─── Proxy Status Check (via IPC to avoid CORS) ───
   const checkProxyStatus = useCallback(async () => {
     try {
-      const response = await fetch(`${proxyUrl}/health`, { method: 'GET', signal: AbortSignal.timeout(2000) });
-      if (response.ok) {
-        setProxyStatus('running');
-        const data = await response.json();
-        setHealthData(data);
+      if (hasElectron && window.electronAPI.proxyRequest) {
+        const result = await window.electronAPI.proxyRequest({ method: 'GET', path: '/health' });
+        if (result && result.status === 200) {
+          setProxyStatus('running');
+          setHealthData(result.data || {});
+        } else {
+          setProxyStatus('stopped');
+        }
       } else {
-        setProxyStatus('stopped');
+        // Browser fallback — may fail due to CORS
+        const response = await fetch(`${proxyUrl}/health`, { method: 'GET', signal: AbortSignal.timeout(2000) });
+        if (response.ok) {
+          setProxyStatus('running');
+          setHealthData(await response.json());
+        } else {
+          setProxyStatus('stopped');
+        }
       }
     } catch (error) {
       setProxyStatus('stopped');
@@ -129,16 +139,20 @@ function ClaudeProxyDashboard() {
   const handleReset = async () => {
     setLoading('reset');
     try {
-      const response = await fetch(`${proxyUrl}/agent/reset-health`, { method: 'POST' });
-      if (response.ok) {
-        addToast('Health scores reset for all models', 'success');
+      if (hasElectron && window.electronAPI.proxyRequest) {
+        const result = await window.electronAPI.proxyRequest({ method: 'POST', path: '/agent/reset-health' });
+        if (result && result.status === 200) {
+          addToast('Health scores reset for all models', 'success');
+        } else {
+          addToast(`Reset returned HTTP ${result?.status}: ${JSON.stringify(result?.data).slice(0, 80)}`, 'warning');
+        }
       } else {
-        const text = await response.text();
-        addToast(`Reset returned HTTP ${response.status}: ${text.slice(0, 80)}`, 'warning');
+        const response = await fetch(`${proxyUrl}/agent/reset-health`, { method: 'POST' });
+        addToast(response.ok ? 'Health scores reset' : `Reset failed: HTTP ${response.status}`, response.ok ? 'success' : 'warning');
       }
       await checkProxyStatus();
     } catch (error) {
-      addToast('Cannot reset health — proxy may be offline. ' + error.message, 'error');
+      addToast('Cannot reset health: ' + error.message, 'error');
     } finally {
       setLoading(null);
     }
@@ -164,27 +178,36 @@ function ClaudeProxyDashboard() {
 
   const handleTest = async () => {
     setLoading('test');
+    const model = selectedModel || 'deepseek-r1:8b';
     try {
       const startTime = Date.now();
-      const response = await fetch(`${proxyUrl}/v1/messages`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-key': 'test', 'anthropic-version': '2023-06-01' },
-        body: JSON.stringify({
-          model: selectedModel || 'deepseek-r1:8b',
-          max_tokens: 50,
-          stream: false,
-          messages: [{ role: 'user', content: 'Reply with just: OK' }],
-        }),
-      });
+      const body = {
+        model,
+        max_tokens: 50,
+        stream: false,
+        messages: [{ role: 'user', content: 'Reply with just: OK' }],
+      };
+
+      let result;
+      if (hasElectron && window.electronAPI.proxyRequest) {
+        result = await window.electronAPI.proxyRequest({ method: 'POST', path: '/v1/messages', body });
+      } else {
+        const response = await fetch(`${proxyUrl}/v1/messages`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-api-key': 'test', 'anthropic-version': '2023-06-01' },
+          body: JSON.stringify(body),
+        });
+        result = { status: response.status, data: await response.json() };
+      }
+
       const latency = ((Date.now() - startTime) / 1000).toFixed(2);
-      if (!response.ok) {
-        const errBody = await response.text();
-        addToast(`HTTP ${response.status}: ${errBody.slice(0, 120)}`, 'error');
+
+      if (result.status !== 200) {
+        addToast(`HTTP ${result.status}: ${JSON.stringify(result.data).slice(0, 100)}`, 'error');
         return;
       }
-      const data = await response.json();
-      const text = data.content?.[0]?.text || 'Empty response';
-      addToast(`${selectedModel} responded in ${latency}s: "${text.slice(0, 50)}"`, 'success');
+      const text = result.data?.content?.[0]?.text || 'Empty response';
+      addToast(`${model} responded in ${latency}s: "${text.slice(0, 50)}"`, 'success');
     } catch (error) {
       addToast(`Test failed: ${error.message}`, 'error');
     } finally {

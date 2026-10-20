@@ -6,6 +6,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   stopProxy: () => ipcRenderer.invoke('stop-proxy'),
   getProxyStatus: () => ipcRenderer.invoke('get-proxy-status'),
 
+  // Generic proxy HTTP request (main process → bypasses CORS)
+  proxyRequest: (opts) => ipcRenderer.invoke('proxy-request', opts),
+
   // Models — dynamic from config
   getModels: () => ipcRenderer.invoke('get-models'),
 

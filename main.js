@@ -439,6 +439,47 @@ ipcMain.handle('get-env-info', async () => {
   };
 });
 
+// ─── Generic HTTP proxy request (bypasses renderer CORS) ───
+ipcMain.handle('proxy-request', async (_event, opts) => {
+  const http = require('http');
+  const { method = 'GET', path: reqPath = '/health', body, headers = {} } = opts;
+
+  return new Promise((resolve, reject) => {
+    const url = new URL(reqPath, PROXY_URL);
+    const postData = body ? JSON.stringify(body) : null;
+
+    const req = http.request({
+      hostname: url.hostname,
+      port: url.port,
+      path: url.pathname,
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': 'claude-proxy-manager',
+        'anthropic-version': '2023-06-01',
+        ...headers,
+        ...(postData ? { 'Content-Length': Buffer.byteLength(postData) } : {}),
+      },
+      timeout: 30000,
+    }, (res) => {
+      let data = '';
+      res.on('data', chunk => { data += chunk; });
+      res.on('end', () => {
+        try {
+          resolve({ status: res.statusCode, headers: res.headers, data: JSON.parse(data) });
+        } catch (_) {
+          resolve({ status: res.statusCode, headers: res.headers, data });
+        }
+      });
+    });
+
+    req.on('error', (err) => reject(new Error(`Proxy unreachable: ${err.message}`)));
+    req.on('timeout', () => { req.destroy(); reject(new Error('Proxy request timed out (30s)')); });
+    if (postData) req.write(postData);
+    req.end();
+  });
+});
+
 // ─── Push status changes to renderer ───
 function notifyStatusChange(running) {
   if (mainWindow && !mainWindow.isDestroyed()) {
