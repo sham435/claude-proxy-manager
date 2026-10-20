@@ -1,0 +1,113 @@
+{
+  "name": "claude-proxy-manager",
+  "version": "1.0.0",
+  "description": "Professional dashboard for managing Claude Code proxy server",
+  "main": "main.js",
+  "author": "Claude Proxy Team",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder",
+    "build:mac": "electron-builder --mac --arm64",
+    "build:win": "electron-builder --win --x64",
+    "build:all": "electron-builder --mac --win",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
+  "build": {
+    "appId": "com.claude.proxy-manager",
+    "productName": "Claude Proxy Manager",
+    "copyright": "Copyright © 2024 Claude Proxy Team",
+    
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["arm64"]
+        }
+      ],
+      "icon": "build/icon.icns",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "NSDocumentsFolderUsageDescription": "Claude Proxy Manager needs access to manage configuration files.",
+        "NSDownloadsFolderUsageDescription": "Claude Proxy Manager needs access to save exported configurations."
+      }
+    },
+    
+    "dmg": {
+      "sign": false,
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ],
+      "window": {
+        "width": 540,
+        "height": 380
+      }
+    },
+    
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "legalTrademarks": "Copyright © 2024 Claude Proxy Team",
+      "publisherName": "Claude Proxy Team"
+    },
+    
+    "nsis": {
+      "oneClick": false,
+      "perMachine": true,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Claude Proxy Manager"
+    },
+    
+    "linux": {
+      "target": ["AppImage"],
+      "category": "Development"
+    }
+  },
+  
+  "dependencies": {
+    "electron-is-dev": "^2.0.0",
+    "electron-store": "^8.1.0"
+  },
+  
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1"
+  }
+}
